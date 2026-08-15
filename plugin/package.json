@@ -1,0 +1,9 @@
+{
+  "name": "vision-bridge",
+  "version": "1.0.0-preview.1",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "DeepSeek Harness 1.0 Preview 视觉桥：通过已配置的多模态路由为纯文本 DeepSeek 提供视觉上下文。",
+  "license": "MIT"
+}

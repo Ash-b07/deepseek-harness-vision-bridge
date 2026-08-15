@@ -1,0 +1,12 @@
+.DS_Store
+.claude/
+.env
+.env.*
+!.env.example
+config.local.json
+node_modules/
+dist/
+coverage/
+*.log
+*.pem
+*.key
