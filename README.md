@@ -1,94 +1,83 @@
 # DeepSeek Harness Vision Bridge
 
-一个仍在探索中的 DeepSeek Harness 视觉桥插件：让纯文本 DeepSeek 模型把图片交给 Harness 中已经配置好的多模态模型，再用返回的文字继续推理。
+DeepSeek Harness 的独立视觉增强插件：主模型继续使用 DeepSeek，图片交给 Harness 中另行选择的多模态模型，视觉结果再以结构化文本送回主模型。
 
 > [!WARNING]
-> 这是 `1.0 Preview`，不是成熟插件。它已经跑通了工具调用和图片上传两条链路，但仍有重复识别历史图片、免费视觉模型限流、单后端无自动回退等问题。这个仓库会保留这些问题和解决过程，而不只展示最后结果。
+> 这是面向 DeepSeek Harness `0.1.0-rc.6` 的 `2.0 Preview`。安装器会对本机 Host 包做带签名校验、原始备份和回滚能力的兼容补丁。Harness 升级后应先检查补丁兼容性。
 
 本项目是非官方社区实验，与 DeepSeek 官方无隶属或背书关系。
 
-## 为什么做这个
+## 2.0 的交互变化
 
-DeepSeek V4 Flash / Pro 在 Harness 中是纯文本路由。遇到图片时，原有行为通常只有两种：
-
-- 当前路由声明支持图片：正常放行；
-- 当前路由不支持图片：拒绝并提示切换模型。
-
-我希望保留 DeepSeek 的推理、工具调用和长上下文，只在需要看图时借用另一个视觉模型，因此尝试加入第三条路径：
-
-```text
-图片输入
-   │
-   ├─ 当前模型原生支持图片 ──> 原样放行
-   │
-   └─ 当前模型是纯文本模型 ──> 视觉模型生成文字描述 ──> DeepSeek 继续推理
-```
-
-更完整的试错过程见 [开发过程](docs/DEVELOPMENT.md)。当前缺陷见 [已知问题](docs/KNOWN_ISSUES.md)。
-
-## 1.0 Preview 已实现
-
-- `vision_bridge` 工具：支持 `describe`、`ocr`、`vqa` 三种模式；
-- `read_image` 兜底：纯文本路由调用内建图片工具时，尝试返回视觉模型生成的文字；
-- 上传适配器：提供 `vision-bridge` 路由，允许上传图片，并在转发给 DeepSeek 前把图片替换为文字描述；
-- 模态感知：原生支持图片的模型不经过桥接；
-- 工具路径缓存：按图片 SHA256、模式和问题缓存 6 小时；
-- 零运行时依赖：插件主体使用 ESM 和 Node.js 内建模块。
-
-需要特别说明：目前缓存只完整覆盖 `vision_bridge` / `read_image` 工具路径，尚未覆盖上传适配器中的历史图片转换。
-
-## 工作方式
-
-插件有两个入口：
-
-### 1. 显式工具
-
-纯文本模型可以调用：
+- 主模型选择器不再注册或显示 `vision-bridge` Provider；
+- 输入框左侧新增独立的「视觉增强」选择点；
+- 只列出模型目录中声明了 `image` 输入能力的真实模型；
+- 视觉开关和模型路由保存在 Host 设置中，切换会话后仍然有效；
+- DeepSeek Provider、模型、推理强度和工具链保持不变。
 
 ```text
-vision_bridge(file_path, mode, question?)
+图片 + 同轮用户问题
+        ↓
+独立选择的多模态模型
+        ↓
+<vision_observation>可核验的视觉观察</vision_observation>
+        ↓
+当前主模型（例如 DeepSeek V4 Flash）
 ```
 
-这是当前最干净的路径，因为工具拥有自己的输入、输出 Schema 和渲染逻辑。
+如果当前主模型本身确实声明并支持图片输入，插件会直接放行，不增加桥接调用。
 
-### 2. 上传图片
+## 为什么仍然需要视觉桥
 
-插件注册 `vision-bridge` provider，并镜像 `deepseek-official` 的模型目录。该 provider 对外声明支持图片，在 `stream()` 中执行：
+截至 2026-08-16，公开资料存在一组容易混淆的信号：
 
-```text
-图片附件 -> 已配置的视觉模型 -> [Image Description: ...] -> deepseek-official
-```
+- [anomalyco/opencode#26775](https://github.com/anomalyco/opencode/issues/26775) 记录：OpenCode v0.99.1 的 `deepseek-v4-flash` 模型条目声明 `input: [text, image]`，但 `OpenAI Chat` 协议在客户端把用户内容硬编码为 text-only，因此图片在发出网络请求前被拒绝；
+- DeepSeek 官方 [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) 当前把 user message 的 `content` 定义为文本字符串，没有 `image_url` 输入结构；
+- DeepSeek 官方 [Anthropic API 兼容表](https://api-docs.deepseek.com/guides/anthropic_api/) 明确把 `content: type=image` 标为不支持；
+- DeepSeek 官方 [GitHub Copilot 集成说明](https://api-docs.deepseek.com/quick_start/agent_integrations/github_copilot/) 将 V4 描述为 text-only，图片由另一个 Copilot 视觉模型代看后转成文字。
+
+因此，#26775 能证明 OpenCode 的“模型条目与协议能力”不一致，但不能单独证明 DeepSeek 官方 API 已开放原生图片输入。这个插件采用保守做法：只有模型目录和实际协议链路都允许图片时才直通，否则使用显式选择的视觉模型桥接。
 
 ## 安装
 
-前提：已经安装并初始化 DeepSeek Harness Web Profile。
+前提：已安装并初始化 DeepSeek Harness Web Profile。
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/Ash-b07/deepseek-harness-vision-bridge.git
 cd deepseek-harness-vision-bridge
 ./install-plugin.sh
 ```
 
-安装脚本会：
+安装器会：
 
-1. 将 `plugin/` 链接到 `~/.dsh/profiles/web/node_modules/vision-bridge`；
-2. 备份并更新 `~/.dsh/profiles/web/cordis.patch.yml`；
-3. 提示你重启 Harness。
+1. 将 `plugin/` 链接到 Web Profile；
+2. 给当前 rc.6 的 `dsh-host-apiproxy` 安装最小 Host 补丁；
+3. 以标准双端 package 加载插件；
+4. 迁移 1.0 的旧 shim 加载项；
+5. 为每个 Host 文件保留 `.vision-bridge-v2.original` 备份。
 
-脚本会修改本地 Harness Profile，运行前建议先阅读 [install-plugin.sh](install-plugin.sh)。
+Host 补丁只负责两项宿主能力：
 
-## 配置视觉模型
+- 视觉增强开启时，允许纯文本主模型所在会话接收图片；
+- 模型目录返回 `inputModalities`，供独立选择器过滤。
 
-插件不会自带 API Key，也不会直接绑定某家视觉服务。它复用 Harness `settings.yaml` 中已经配置好的模型路由。
+补丁按精确代码签名安装；签名不一致时会在写入前失败。
 
-复制示例配置：
+重启：
 
 ```bash
-cp config.local.json.example config.local.json
+dsh web
 ```
+
+看到 `dsh web: http://127.0.0.1:3080` 即表示实例已启动。不要重复运行第二个实例，否则会出现 `EADDRINUSE`。
+
+## 配置和使用
+
+首次安装的默认配置：
 
 ```json
 {
+  "enabled": true,
   "visionProvider": "opencode",
   "visionModel": "mimo-v2.5-free",
   "maxTokens": null,
@@ -96,72 +85,59 @@ cp config.local.json.example config.local.json
 }
 ```
 
-目标模型必须在 Harness 模型目录中声明图片输入，例如：
+重启后，在输入框左侧打开「视觉增强」，选择例如 `opencode / MiMo V2.5 Free`。目标模型必须在 Harness 模型配置中声明：
 
 ```yaml
-llm-pi-ai:
-  providers:
-    opencode:
-      models:
-        - id: mimo-v2.5-free
-          input: [text, image]
+input: [text, image]
 ```
 
-这里的声明只表示“允许发送图片”，并不能证明服务端模型一定支持视觉能力。
+插件复用 Harness 已有的 Provider、API Key、base URL、重试和计费链路，不保存额外密钥。
 
-## 使用
+## 三条视觉路径
 
-显式读取本地图片：
+| 路径 | 行为 |
+|---|---|
+| 直接上传图片 | 自动生成视觉观察，再用克隆请求调用当前主模型；2.0 的正常路径 |
+| 主模型调用 `vision_bridge` | 显式 OCR、描述或视觉问答 |
+| 主模型调用 `read_image` | 纯文本模型下兜底；受官方工具输出契约限制，会显示为带描述的失败结果 |
 
-```text
-请用 vision_bridge 看一下 /absolute/path/to/image.png
+同一图片、问题、视觉路由和提示词版本在 6 小时内复用观察缓存。切换视觉模型会产生不同缓存键。
+
+Agent Loop 的模型请求会被深度冻结。本次修复不再原地改写 `options.messages`：它生成一份只含文本观察的克隆请求，再调用原 Provider/模型，并通过一次性保护避免递归编排。
+
+## 回滚 Host 补丁
+
+```bash
+node host-patch.mjs --revert \
+  ~/.dsh/profiles/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js \
+  ~/.dsh/profiles/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js
 ```
 
-直接上传图片时，在 Harness 中选择：
-
-```text
-vision-bridge / deepseek-v4-flash
-```
-
-也可以把它设置为新会话默认模型：
-
-```yaml
-agent-default-model:
-  provider: vision-bridge
-  model: deepseek-v4-flash
-```
+回滚后，纯文本主模型的直接图片上传会恢复为官方拒绝行为。
 
 ## 测试
-
-测试不访问网络，使用假的 Harness 上下文和模型流：
 
 ```bash
 npm test
 ```
 
-当前覆盖能力判断、缓存、工具 Schema、`read_image` 钩子、Harness 后端和上传适配器。
+测试不访问网络，覆盖能力判断、缓存、工具 Schema、`read_image` 兜底、Harness 后端、深度冻结请求和内部转发防递归。
 
 ## 隐私与成本
 
-- 图片会发送到你配置的视觉模型服务商；
+- 图片会发送到你选择的视觉模型服务商；
 - 免费模型可能限流，付费模型可能产生费用；
 - 敏感图片应使用可信服务或本地视觉模型；
-- 不要把 API Key 写进 `config.local.json.example` 或提交到 Git。
+- 不要把 API Key 写进仓库配置。
 
-## 社区与支持
+## 设计来源
 
-- 欢迎通过 [GitHub Discussions](../../discussions) 提交使用反馈、分享视觉模型配置或报告问题；
-- 如果问题可能包含 API Key、内部图片或其他敏感信息，请先脱敏，不要直接发布到公开讨论区；
-- 本仓库使用 `dsh-plugin` topic，方便在 DeepSeek Harness 插件生态中被发现。
+- [fufankeji/deepseek-harness-studio](https://github.com/fufankeji/deepseek-harness-studio)：独立视觉入口、Host 图片准入、模型流编排和结构化视觉观察；
+- [Vizards/deepseek-v4-for-copilot](https://github.com/Vizards/deepseek-v4-for-copilot)：透明视觉代理与图片描述回填思路；
+- [anomalyco/opencode#26775](https://github.com/anomalyco/opencode/issues/26775)：模型能力元数据与协议层准入不一致的案例。
 
-## Roadmap
+详细演进见 [开发过程](docs/DEVELOPMENT.md)，限制见 [已知问题](docs/KNOWN_ISSUES.md)。
 
-- 为上传适配器增加图片指纹缓存，避免多轮会话重复识别历史图片；
-- 支持多个视觉路由自动回退；
-- 按 429、鉴权、超时和格式错误区分处理；
-- 改善失败时的会话体验；
-- 补充真实环境兼容性测试。
+## License
 
-## 开源说明
-
-项目使用 MIT License。实现过程参考了 DeepSeek Harness 的插件与工具接口，以及 `deepseek-v4-for-copilot` 的透明视觉代理思路，详情见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+MIT

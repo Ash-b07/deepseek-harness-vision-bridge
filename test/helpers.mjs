@@ -81,6 +81,13 @@ export function fakeCtx({ fs, llm, attachments } = {}) {
       handlers[event] = handler;
       return () => {};
     },
+    inject(names, callback) {
+      if (names.every((name) => services[name] !== undefined)) callback(this);
+      return () => {};
+    },
+    effect(setup) {
+      return setup();
+    },
   };
 }
 

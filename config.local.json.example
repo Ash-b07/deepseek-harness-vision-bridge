@@ -1,4 +1,5 @@
 {
+  "enabled": true,
   "visionProvider": "opencode",
   "visionModel": "mimo-v2.5-free",
   "maxTokens": null,

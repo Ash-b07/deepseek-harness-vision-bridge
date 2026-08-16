@@ -1,9 +1,9 @@
 {
   "name": "deepseek-harness-vision-bridge",
-  "version": "1.0.0-preview.1",
+  "version": "2.0.0-preview.1",
   "private": true,
   "type": "module",
-  "description": "Experimental vision bridge for text-only DeepSeek models in DeepSeek Harness.",
+  "description": "Independent visual-model selector and automatic vision bridge for DeepSeek Harness.",
   "scripts": {
     "test": "node test/capability.test.mjs && node test/bridge.test.mjs && node test/hook.test.mjs && node test/harness-backend.test.mjs && node test/shim.test.mjs"
   },

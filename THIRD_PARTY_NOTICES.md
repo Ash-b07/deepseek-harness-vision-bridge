@@ -43,4 +43,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## deepseek-harness-studio
+
+- Repository: https://github.com/fufankeji/deepseek-harness-studio
+
+2.0 的独立视觉入口、Host 图片准入和结构化视觉观察方案参考了该项目的公开架构。当前实现重新编写，并将视觉路由改为从 Harness 模型目录动态选择。
+
+## OpenCode protocol evidence
+
+- Issue: https://github.com/anomalyco/opencode/issues/26775
+
+该 issue 被引用为“模型能力元数据与协议层准入可能不一致”的公开案例。引用不表示本项目复用了 OpenCode 代码，也不表示 issue 中的第三方模型条目能够证明 DeepSeek 官方 API 的服务端能力。
+
 所有第三方项目的名称与商标归各自权利人所有。上述引用不表示这些项目对本仓库提供背书。

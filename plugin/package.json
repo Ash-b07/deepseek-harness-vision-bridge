@@ -1,9 +1,28 @@
 {
   "name": "vision-bridge",
-  "version": "1.0.0-preview.1",
+  "version": "2.0.0-preview.1",
   "private": true,
   "type": "module",
   "main": "index.js",
-  "description": "DeepSeek Harness 1.0 Preview 视觉桥：通过已配置的多模态路由为纯文本 DeepSeek 提供视觉上下文。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "description": "DeepSeek Harness 视觉增强 2.0：独立选择视觉模型，自动把图片观察结果交给当前主模型。",
   "license": "MIT"
 }

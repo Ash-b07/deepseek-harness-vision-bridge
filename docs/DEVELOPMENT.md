@@ -90,3 +90,39 @@ DeepSeek 会在发送整轮请求时拒绝 function schema。结果不是“工�
 - 视觉调用可以复用 Harness 已配置的 provider/model，而不是在插件中再维护一套 Key。
 
 它还没有解决自动回退、跨入口缓存和完全无错误提示。后续版本会先修重复识图，再考虑多路由与熔断。
+
+## 7. 2.0：从 shim Provider 改为独立视觉入口
+
+1.0 虽然打通了上传，但把 `vision-bridge` 放进主模型选择器，用户必须在“DeepSeek”和“桥接后的 DeepSeek”之间手动切换。2.0 借鉴 `deepseek-harness-studio` 的交互，把视觉路由拆成输入框左侧的独立选择点：
+
+- 主模型仍是原来的 Provider/模型；
+- 视觉入口只展示声明了 image 输入能力的模型；
+- 开关和视觉路由通过 Host settings 持久化；
+- Host 只负责图片准入和返回模型模态元数据；
+- 全局模型流在必要时生成结构化 `vision_observation`。
+
+旧 shim Provider 因此被删除，主模型列表不再出现 `vision-bridge` 分组。
+
+## 8. 深度冻结请求故障与修复
+
+第一版自动编排直接执行 `options.messages = messages`。真实 Agent Loop 会深度冻结完整请求，这导致：
+
+```text
+Cannot assign to read only property 'messages' of object '#<Object>'
+```
+
+Harness 的 `llm/stream` 中间件契约明确要求监听器只读 loop-built request。修复方式不是尝试解冻，而是：
+
+1. 保持原请求完全不变；
+2. 视觉模型生成观察文本；
+3. 创建一份保留原 Provider、模型、推理参数和 signal 的克隆请求；
+4. 克隆请求携带替换后的纯文本 messages；
+5. 用 WeakSet 只绕过这一次内部编排，再进入原 LLM runtime。
+
+回归测试使用深度冻结对象复现真实边界，并让内部调用再次经过同一中间件，确认视觉适配器和主模型适配器各调用一次、不会递归。
+
+## 9. 模型声明、协议准入和官方能力不是一回事
+
+[anomalyco/opencode#26775](https://github.com/anomalyco/opencode/issues/26775) 报告：OpenCode v0.99.1 的模型条目把 `deepseek-v4-flash` 标为 text+image，但 OpenAI Chat 协议在客户端只允许 text，所以图片请求没有发到服务端。
+
+这证明了“模型目录元数据”和“协议层准入”可能矛盾。但继续核对 DeepSeek 官方文档后，Chat Completions 的 user content 仍是文本字符串，Anthropic 兼容表把 image 标为不支持，官方 Copilot 集成也使用外部视觉模型代理图片。因此 2.0 不把 OpenCode 条目当作 DeepSeek 官方原生视觉已经开放的证据，而把它记录为链路能力判断必须分层的案例。

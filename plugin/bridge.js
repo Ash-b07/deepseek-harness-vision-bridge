@@ -69,7 +69,8 @@ export async function runBridgeWithBackend(ctx, exec, args, backend, cache) {
   const { bytes, mediaType, displayPath } = await readImageBytes(ctx, exec, args.file_path);
   const mode = args.mode ?? 'describe';
   const question = String(args.question ?? '').trim();
-  const key = `${sha256Hex(bytes)}:${mode}:${question}`;
+  const backendRoute = `${backend.id}:${backend.opts?.visionProvider ?? ''}/${backend.opts?.visionModel ?? backend.model ?? ''}`;
+  const key = `vision-bridge-v2:${backendRoute}:${sha256Hex(bytes)}:${mode}:${question}`;
 
   const hit = cache.get(key);
   if (hit !== undefined) {
