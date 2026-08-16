@@ -1,14 +1,15 @@
 /**
- * vision-bridge · DeepSeek Harness 视觉桥插件 1.0(纯 ESM JS,零运行时依赖)。
+ * vision-bridge · DeepSeek Harness 视觉增强 2.0。
  *
- * 目标(自用 1.0):纯文本模型(deepseek-v4-flash / deepseek-v4-pro)在任务推理中
+ * 目标:纯文本模型(deepseek-v4-flash / deepseek-v4-pro)在任务推理中
  * 遇到图片时「无体感」地调用 DSH 里**已经配置好的视觉模型**(如 opencode/mimo-v2.5-free):
  *
- *   1. read_image 拦截钩子(tools/execute):
+ *   1. 上传图片入口(llm/stream):图片 → 独立视觉模型 → observation 文本 → 原主模型;
+ *   2. read_image 拦截钩子(tools/execute):
  *      - 模型声明支持 image → return next(),原生直通,零开销、插件完全透明;
  *      - 纯文本路由 → 插件接管:读图 → 经 ctx.llm 调已配置的视觉模型 → 文本描述喂回模型,
  *        模型拿到的是一段文字,而不是「当前模型不支持图片」的报错。
- *   2. vision_bridge 显式工具:
+ *   3. vision_bridge 显式工具:
  *      模型可主动调用,支持 mode=ocr / describe / vqa。
  *
  * 关键实现约束(踩坑后修正,勿回退):
@@ -25,19 +26,23 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { routeSupportsImage } from './capability.js';
 import { renderEnvelope, runBridge } from './bridge.js';
 import { VISION_MODES } from './backends/common.js';
-import { createVisionBridgeAdapter } from './shim.js';
+import { createAutoVisionHook } from './auto-bridge.js';
 import { TtlCache } from './cache.js';
 
 /** Cordis 插件名(loader 诊断用)。 */
 export const name = 'vision-bridge';
 
 /** 声明依赖的服务:llm(能力判断)/ tools(注册)/ fs(读字节);attachments 可选。 */
-export const inject = ['llm', 'tools', 'fs'];
+export const inject = ['llm', 'tools', 'fs', 'settings'];
+
+/** Host 与 Client 共用的持久设置命名空间。 */
+export const VISION_SETTINGS_NAMESPACE = 'vision-bridge';
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +61,7 @@ function loadLocalConfig() {
 function mergeConfig(patchConfig) {
   const local = loadLocalConfig();
   return {
+    enabled: true,
     // 视觉桥后端 = DSH 已配置的模型路由(settings.yaml 的 llm-pi-ai 下)
     visionProvider: 'opencode',
     visionModel: 'mimo-v2.5-free',
@@ -64,6 +70,55 @@ function mergeConfig(patchConfig) {
     ...local,
     ...patchConfig,
   };
+}
+
+/**
+ * 注册视觉增强的持久设置。Schemastery 从 profile 的模块图解析，插件目录无需复制依赖。
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {ReturnType<typeof mergeConfig>} cfg
+ */
+function registerVisionSettings(ctx, cfg) {
+  const initial = {
+    enabled: cfg.enabled !== false,
+    route: {
+      provider: String(cfg.visionProvider || 'opencode'),
+      model: String(cfg.visionModel || 'mimo-v2.5-free'),
+    },
+    ...(cfg.maxTokens ? { maxTokens: Number(cfg.maxTokens) } : {}),
+  };
+  // settings 是可热重载的服务，必须通过 ctx.inject 挂接；apply 时直接 ctx.get/ctx.settings
+  // 可能尚未拿到它。source 在服务缺席时仍回退到组合配置。
+  let source = () => initial;
+  ctx.inject(['settings'], (sctx) => {
+    const require = createRequire(sctx.baseUrl ?? ctx.baseUrl ?? import.meta.url);
+    const loaded = require('@deepseek-ai/schemastery');
+    const Schema = loaded.default ?? loaded;
+    const schema = Schema.object({
+      enabled: Schema.boolean(),
+      route: Schema.object({
+        provider: Schema.string(),
+        model: Schema.string(),
+      }),
+      maxTokens: Schema.number(),
+    });
+    const scope = sctx.settings.register(VISION_SETTINGS_NAMESPACE, schema, {
+      base: initial,
+      applies: 'live',
+      validate(value) {
+        if (!value?.route?.provider?.trim() || !value?.route?.model?.trim()) {
+          throw new TypeError('视觉增强需要有效的 provider/model 路由');
+        }
+        if (value.maxTokens !== undefined && (!Number.isInteger(value.maxTokens) || value.maxTokens <= 0)) {
+          throw new TypeError('maxTokens 必须是正整数');
+        }
+      },
+    });
+    source = () => scope.get();
+    sctx.effect(() => () => {
+      source = () => initial;
+    });
+  });
+  return { get: () => source() };
 }
 
 /** 组装后端配置(harness 后端:复用 settings.yaml 的路由,插件零 Key)。 */
@@ -89,23 +144,23 @@ const VISION_BRIDGE_DESCRIPTION =
  */
 export function apply(ctx, patchConfig = {}) {
   const cfg = mergeConfig(patchConfig);
+  const visionSettings = registerVisionSettings(ctx, cfg);
   const cache = new TtlCache({ ttlMs: cfg.cacheTtlMs });
-  const backendConfig = () => buildBackendConfig(cfg);
+  const backendConfig = () => {
+    const current = visionSettings.get();
+    return buildBackendConfig({
+      visionProvider: current.route.provider,
+      visionModel: current.route.model,
+      maxTokens: current.maxTokens,
+    });
+  };
 
-  // ── 0) 2.0 适配器 shim:注册 vision-bridge 路由(声明 image 能力)─────────────
-  //      会话切到 vision-bridge / <deepseek 模型> 后:上传预检与 read_image 闸门
-  //      全部放行;stream() 把图片块转文本后转发 deepseek-official(见 shim.js)。
-  const shimRegistration = ctx.llm.registerAdapter(
-    ['vision-bridge'],
-    createVisionBridgeAdapter(ctx, { visionProvider: cfg.visionProvider, visionModel: cfg.visionModel }),
+  // ── 0) 自动上传桥接:不是 Provider,不会污染主模型目录 ───────────────────
+  ctx.on(
+    'llm/stream',
+    createAutoVisionHook(ctx, visionSettings, { ttlMs: cfg.cacheTtlMs }),
+    { global: true },
   );
-  ctx.on('dispose', () => {
-    try {
-      shimRegistration.dispose();
-    } catch {
-      /* 插件卸载时适配器可能已随路由释放 */
-    }
-  });
 
   // ── 1) 显式工具 vision_bridge ─────────────────────────────────────────────
   ctx.tools.register({
